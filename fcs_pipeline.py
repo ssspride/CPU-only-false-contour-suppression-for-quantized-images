@@ -1,32 +1,27 @@
 """
-False Contour Suppression via Active Gradient Restoration
-Based on the paper's theoretical foundations and proposed method.
-
-Target platform: Raspberry Pi 5 (ARM Cortex-A76, 4 cores, 8 GB RAM)
-No GPU/NPU acceleration - pure NumPy implementation.
+CPU-only false contour suppression for directly quantized images.
+Reference implementation (NumPy, CPU only).
 """
 
-import numpy as np
-from collections import deque
-from typing import List, Tuple, Dict, Set, Optional
 import math
+from collections import deque
+from typing import Dict, List, Set, Tuple
+
+import numpy as np
 
 
-# =============================================================================
-# Utility Functions
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
 
 def quantize_image(f: np.ndarray, n: int) -> np.ndarray:
-    """
-    Direct quantization: discard n least significant bits.
-    Eq. (1): F(i,j) = floor(f(i,j) / 2^n) * 2^n
-    """
+    """Discard the n least significant bits of each pixel."""
     step = 1 << n
     return (f // step) * step
 
 
 def get_8_neighbors(i: int, j: int, H: int, W: int) -> List[Tuple[int, int]]:
-    """Return 8-connected neighbors within image bounds."""
+    """8-connected neighbors within image bounds."""
     neighbors = []
     for di in (-1, 0, 1):
         for dj in (-1, 0, 1):
@@ -38,48 +33,31 @@ def get_8_neighbors(i: int, j: int, H: int, W: int) -> List[Tuple[int, int]]:
     return neighbors
 
 
-def get_4_neighbors(i: int, j: int, H: int, W: int) -> List[Tuple[int, int]]:
-    """Return 4-connected neighbors within image bounds."""
-    neighbors = []
-    for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-        ni, nj = i + di, j + dj
-        if 0 <= ni < H and 0 <= nj < W:
-            neighbors.append((ni, nj))
-    return neighbors
-
-
 def local_mean(F: np.ndarray, e: int) -> np.ndarray:
-    """
-    Compute local mean within e x e window using integral image (fast, cache-friendly).
-    """
+    """Local mean over an e x e window, computed via integral image."""
     H, W = F.shape
     r = e // 2
-    # Pad F for boundary handling (replicate)
-    Fp = np.pad(F.astype(np.float64), r, mode='edge')
-    # Integral image of padded array
+    Fp = np.pad(F.astype(np.float64), r, mode="edge")
     Ip = np.zeros((H + 2 * r + 1, W + 2 * r + 1), dtype=np.float64)
     Ip[1:, 1:] = np.cumsum(np.cumsum(Fp, axis=0), axis=1)
 
-    # Window sums via integral image
-    Ii, Jj = np.meshgrid(np.arange(H), np.arange(W), indexing='ij')
-    S = (Ip[Ii + 2 * r + 1, Jj + 2 * r + 1]
-         - Ip[Ii, Jj + 2 * r + 1]
-         - Ip[Ii + 2 * r + 1, Jj]
-         + Ip[Ii, Jj])
+    Ii, Jj = np.meshgrid(np.arange(H), np.arange(W), indexing="ij")
+    S = (
+        Ip[Ii + 2 * r + 1, Jj + 2 * r + 1]
+        - Ip[Ii, Jj + 2 * r + 1]
+        - Ip[Ii + 2 * r + 1, Jj]
+        + Ip[Ii, Jj]
+    )
     count = (2 * r + 1) ** 2
     return S / count
 
 
-# =============================================================================
-# Stage 1: False Contour Region Detection
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Stage 1: false contour region detection
+# -----------------------------------------------------------------------------
 
 def variable_thresholding(F: np.ndarray) -> Tuple[np.ndarray, int]:
-    """
-    Variable thresholding.
-    Eq. (2)-(3): g(i,j) = 1 if F(i,j) == local mean m_{i,j}, else 0.
-    Adaptive window size s = 2*floor(sqrt(W*H)/150) + 3.
-    """
+    """Variable thresholding with an adaptive window size."""
     H, W = F.shape
     s = 2 * int(math.floor(math.sqrt(W * H) / 150.0)) + 3
     m = local_mean(F, s)
@@ -88,7 +66,7 @@ def variable_thresholding(F: np.ndarray) -> Tuple[np.ndarray, int]:
 
 
 def exclude_extremes(g: np.ndarray, F: np.ndarray, x: int) -> np.ndarray:
-    """Exclude pixels with values 0 or 2^x - 1 from candidate set."""
+    """Exclude saturated or clipped pixels from the candidate set."""
     g = g.copy()
     max_val = (1 << x) - 1
     g[(F == 0) | (F == max_val)] = 0
@@ -96,20 +74,17 @@ def exclude_extremes(g: np.ndarray, F: np.ndarray, x: int) -> np.ndarray:
 
 
 def morphological_dilate_binary(mask: np.ndarray, radius: int) -> np.ndarray:
-    """
-    Binary dilation with a square structuring element of given radius.
-    Separable max-filter using sliding window maximum via cumulative approach.
-    """
+    """Binary dilation with a square structuring element."""
     if radius <= 0:
         return mask.copy()
     H, W = mask.shape
-    # Horizontal dilation
+
     out = np.zeros_like(mask)
     for j in range(W):
         j0 = max(0, j - radius)
         j1 = min(W, j + radius + 1)
         out[:, j] = np.max(mask[:, j0:j1], axis=1)
-    # Vertical dilation
+
     res = np.zeros_like(out)
     for i in range(H):
         i0 = max(0, i - radius)
@@ -119,9 +94,7 @@ def morphological_dilate_binary(mask: np.ndarray, radius: int) -> np.ndarray:
 
 
 def compute_n_sp(W: int, H: int, G_active: int, N1: int, N0: int) -> int:
-    """
-    Eq. (4): N_sp = 2*sqrt(G_active) * (N1/(N1+N0))^2 * sqrt(W*H)
-    """
+    """Adaptive superpixel count."""
     ratio = N1 / max(N1 + N0, 1)
     n_sp = 2.0 * math.sqrt(max(G_active, 1)) * (ratio ** 2) * math.sqrt(W * H)
     return max(1, int(round(n_sp)))
@@ -131,13 +104,9 @@ def simple_linear_iterative_clustering_single_iter(
     F: np.ndarray,
     g: np.ndarray,
     G_active: int,
-    n_sp: int
+    n_sp: int,
 ) -> Tuple[np.ndarray, List[Tuple[int, int]], int]:
-    """
-    Single-iteration variant of SLIC (vectorized, batched).
-    Since pre-quantized input has large uniform bands with deterministic
-    boundaries, a single assignment step is sufficient.
-    """
+    """Single-iteration SLIC assignment (vectorized, batched)."""
     H, W = F.shape
     grid_step = max(1, int(math.sqrt(H * W / max(n_sp, 1))))
 
@@ -149,18 +118,18 @@ def simple_linear_iterative_clustering_single_iter(
     if n_sp_actual == 0:
         return np.zeros((H, W), dtype=np.int32), [], 0
 
-    centers_arr = np.array(centers, dtype=np.float32)  # (K, 3)
+    centers_arr = np.array(centers, dtype=np.float32)
     m = 10.0
     m2 = m * m
     S2 = float(grid_step * grid_step)
 
     labels = np.empty((H, W), dtype=np.int32)
-    batch = 64  # process 64 rows at a time to limit memory
+    batch = 64
     for i0 in range(0, H, batch):
         i1 = min(i0 + batch, H)
         yy, xx = np.mgrid[i0:i1, 0:W]
         vv = F[i0:i1, :].astype(np.float32)
-        # dc: (b, W, K)
+
         dc = (yy[..., None] - centers_arr[:, 0]) ** 2 \
              + (xx[..., None] - centers_arr[:, 1]) ** 2
         dv = (vv[..., None] - centers_arr[:, 2]) ** 2
@@ -173,12 +142,9 @@ def simple_linear_iterative_clustering_single_iter(
 def adjacency_driven_region_merging(
     F: np.ndarray,
     labels: np.ndarray,
-    g: np.ndarray
+    g: np.ndarray,
 ) -> Tuple[List[Set[Tuple[int, int]]], List[int]]:
-    """
-    ARM: merge adjacent superpixels sharing identical pixel value and
-    8-connected boundaries.
-    """
+    """Merge adjacent superpixels sharing the same value."""
     H, W = F.shape
     label_value_map: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
     for i in range(H):
@@ -190,7 +156,6 @@ def adjacency_driven_region_merging(
 
     group_keys = list(label_value_map.keys())
     n_groups = len(group_keys)
-
     parent = list(range(n_groups))
 
     def find(a):
@@ -233,14 +198,9 @@ def region_qualification_criteria(
     cluster_values: List[int],
     f_original: np.ndarray,
     n: int,
-    F: np.ndarray
+    F: np.ndarray,
 ) -> List[Set[Tuple[int, int]]]:
-    """
-    RQC: filter clusters by:
-      1. Neighborhood criterion: at least one neighboring cluster
-      2. Equidistant step criterion: neighbor diff == 2^n
-      3. Grayscale richness criterion: original region has >= n distinct levels
-    """
+    """Neighborhood, equidistant-step, and grayscale-richness criteria."""
     H, W = f_original.shape
     n_clusters = len(clusters)
 
@@ -263,6 +223,7 @@ def region_qualification_criteria(
     for idx, c in enumerate(clusters):
         if len(neighbors[idx]) == 0:
             continue
+
         ok = True
         for nidx in neighbors[idx]:
             if abs(cluster_values[idx] - cluster_values[nidx]) != step:
@@ -270,6 +231,7 @@ def region_qualification_criteria(
                 break
         if not ok:
             continue
+
         vals = set()
         for (i, j) in c:
             vals.add(int(f_original[i, j]))
@@ -277,6 +239,7 @@ def region_qualification_criteria(
                 break
         if len(vals) < n:
             continue
+
         qualified.append(c)
 
     return qualified
@@ -285,13 +248,9 @@ def region_qualification_criteria(
 def detect_false_contour_regions(
     f: np.ndarray,
     n: int,
-    x: int
+    x: int,
 ) -> Tuple[List[Set[Tuple[int, int]]], np.ndarray, np.ndarray]:
-    """
-    Full detection pipeline:
-      pre-quantize -> variable thresholding -> exclude extremes -> dilate
-      -> SLIC (single iter) -> ARM -> RQC
-    """
+    """Detection pipeline."""
     F = quantize_image(f, n)
     H, W = f.shape
 
@@ -308,39 +267,28 @@ def detect_false_contour_regions(
 
     n_sp = compute_n_sp(W, H, G_active, N1, N0)
 
-    labels, centers, n_sp_actual = simple_linear_iterative_clustering_single_iter(
+    labels, _, _ = simple_linear_iterative_clustering_single_iter(
         F, g, G_active, n_sp
     )
-
     clusters, cluster_values = adjacency_driven_region_merging(F, labels, g)
-
     qualified = region_qualification_criteria(clusters, cluster_values, f, n, F)
 
     return qualified, F, g
 
 
-# =============================================================================
-# Stage 2: Pre-compression Processing
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Stage 2: pre-compression processing
+# -----------------------------------------------------------------------------
 
 def grayscale_level_grouping(
     A: List[Set[Tuple[int, int]]],
     f_original: np.ndarray,
     F_quantized: np.ndarray,
-    n: int
+    n: int,
 ) -> Tuple[List[Dict], int, int, int]:
-    """
-    For each false contour cluster A_i:
-      - Extract original pixel values -> T_i
-      - Sort distinct levels ascending -> E_i
-      - Partition into n subgroups -> R_i
-      - Compute H_i via Eq. (5)
-
-    Returns:
-        clusters_info, r_min, h_max, h_min
-    """
+    """Group grayscale levels and build the mapping array."""
     clusters_info = []
-    r_min = float('inf')
+    r_min = float("inf")
 
     for A_i in A:
         coords = list(A_i)
@@ -357,16 +305,18 @@ def grayscale_level_grouping(
             end = min(start + subgroup_size, o)
             R_i.append(E_i[start:end] if start < o else [])
 
-        # Count pixels per subgroup using searchsorted (faster than np.isin)
         E_arr = np.array(E_i, dtype=np.int64) if E_i else np.array([], dtype=np.int64)
         counts = []
         for R_j in R_i:
             if len(R_j) == 0:
                 counts.append(0)
                 continue
-            lo = np.searchsorted(E_arr, R_j[0], side='left')
-            hi = np.searchsorted(E_arr, R_j[-1], side='right')
-            cnt = int(np.sum((orig_vals >= E_arr[lo]) & (orig_vals <= E_arr[hi - 1]))) if hi > lo else 0
+            lo = np.searchsorted(E_arr, R_j[0], side="left")
+            hi = np.searchsorted(E_arr, R_j[-1], side="right")
+            if hi > lo:
+                cnt = int(np.sum((orig_vals >= E_arr[lo]) & (orig_vals <= E_arr[hi - 1])))
+            else:
+                cnt = 0
             counts.append(cnt)
             if 0 < cnt < r_min:
                 r_min = cnt
@@ -375,22 +325,22 @@ def grayscale_level_grouping(
         H_i = [q_i + j * step for j in range(n)]
 
         clusters_info.append({
-            'coords': coords,
-            'q_i': q_i,
-            'E_i': E_i,
-            'R_i': R_i,
-            'H_i': H_i,
-            'counts': counts,
-            'orig_vals': orig_vals,
+            "coords": coords,
+            "q_i": q_i,
+            "E_i": E_i,
+            "R_i": R_i,
+            "H_i": H_i,
+            "counts": counts,
+            "orig_vals": orig_vals,
         })
 
-    if r_min == float('inf'):
+    if r_min == float("inf"):
         r_min = 1
     r_min = min(int(r_min), (1 << 24) - 1)
 
     all_H = []
     for info in clusters_info:
-        all_H.extend(info['H_i'])
+        all_H.extend(info["H_i"])
     h_max = max(all_H) if all_H else 0
     h_min = min(all_H) if all_H else 0
 
@@ -399,20 +349,16 @@ def grayscale_level_grouping(
 
 def apply_pre_compression_mapping(
     clusters_info: List[Dict],
-    f_original: np.ndarray
+    f_original: np.ndarray,
 ) -> np.ndarray:
-    """
-    Apply the pre-compression mapping to original pixel values.
-    Each pixel in subgroup R^j_i is mapped to H^j_i.
-    """
+    """Map original pixels to the pre-compression values."""
     mapped = f_original.copy()
     for info in clusters_info:
-        coords = info['coords']
-        R_i = info['R_i']
-        H_i = info['H_i']
-        orig_vals = info['orig_vals']
+        coords = info["coords"]
+        R_i = info["R_i"]
+        H_i = info["H_i"]
+        orig_vals = info["orig_vals"]
 
-        # Build value -> subgroup index lookup
         val_to_j: Dict[int, int] = {}
         for jdx, R_j in enumerate(R_i):
             for v in R_j:
@@ -426,14 +372,12 @@ def apply_pre_compression_mapping(
     return mapped
 
 
-# =============================================================================
-# Stage 3: Decompression and Image Reconstruction
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Stage 3: decompression and reconstruction
+# -----------------------------------------------------------------------------
 
 def connected_components_8(F_q: np.ndarray) -> Tuple[np.ndarray, List[Dict]]:
-    """
-    Find 8-connected components of pixels sharing the same grayscale value.
-    """
+    """8-connected components of equal-valued pixels."""
     H, W = F_q.shape
     comp_map = -np.ones((H, W), dtype=np.int32)
     components = []
@@ -455,9 +399,9 @@ def connected_components_8(F_q: np.ndarray) -> Tuple[np.ndarray, List[Dict]]:
                         comp_map[ni, nj] = current_label
                         q.append((ni, nj))
             components.append({
-                'value': int(val),
-                'pixels': pixels,
-                'label': current_label
+                "value": int(val),
+                "pixels": pixels,
+                "label": current_label,
             })
             current_label += 1
 
@@ -468,16 +412,14 @@ def component_filtering_criteria(
     components: List[Dict],
     r_min: int,
     h_min: int,
-    h_max: int
+    h_max: int,
 ) -> List[Dict]:
-    """
-    CFC: cardinality >= r_min and value in [h_min, h_max].
-    """
+    """Cardinality and value-range constraints."""
     qualified = []
     for comp in components:
-        if len(comp['pixels']) < r_min:
+        if len(comp["pixels"]) < r_min:
             continue
-        if not (h_min <= comp['value'] <= h_max):
+        if not (h_min <= comp["value"] <= h_max):
             continue
         qualified.append(comp)
     return qualified
@@ -485,33 +427,25 @@ def component_filtering_criteria(
 
 def secondary_mapping_positioning(
     components: List[Dict],
-    n: int
+    n: int,
 ) -> List[Dict]:
-    """
-    Path-by-path feature determination:
-      For each seed (component with value Z_1), find n-1 successive merges
-      where each next component's value = current + 1 and is 8-adjacent.
-
-    Returns: list of composite components.
-    """
+    """Path-by-path feature determination."""
     if not components:
         return []
 
-    # Index components by value
     value_to_indices: Dict[int, List[int]] = {}
     for idx, comp in enumerate(components):
-        value_to_indices.setdefault(comp['value'], []).append(idx)
+        value_to_indices.setdefault(comp["value"], []).append(idx)
 
-    # Build adjacency between components
     pixel_to_comp: Dict[Tuple[int, int], int] = {}
     for idx, comp in enumerate(components):
-        for p in comp['pixels']:
+        for p in comp["pixels"]:
             pixel_to_comp[p] = idx
 
     n_comps = len(components)
     adj: List[Set[int]] = [set() for _ in range(n_comps)]
     for idx, comp in enumerate(components):
-        for (i, j) in comp['pixels']:
+        for (i, j) in comp["pixels"]:
             for di in (-1, 0, 1):
                 for dj in (-1, 0, 1):
                     if di == 0 and dj == 0:
@@ -532,7 +466,7 @@ def secondary_mapping_positioning(
         for seed_idx in value_to_indices[seed_val]:
             if used[seed_idx]:
                 continue
-            # DFS to collect all valid paths of length n-1
+
             paths: List[List[int]] = []
 
             def dfs(cur_idx: int, cur_val: int, path: List[int], visited: Set[int]):
@@ -556,20 +490,21 @@ def secondary_mapping_positioning(
             dfs(seed_idx, seed_val, [seed_idx], visited)
 
             for path in paths:
-                # Mark all as used (prevents reuse by later seeds)
                 for idx in path:
                     used[idx] = True
-                values = [components[idx]['value'] for idx in path]
+
+                values = [components[idx]["value"] for idx in path]
                 pixels_by_value: Dict[int, List[Tuple[int, int]]] = {}
                 all_pixels = []
                 for idx in path:
-                    v = components[idx]['value']
-                    pixels_by_value.setdefault(v, []).extend(components[idx]['pixels'])
-                    all_pixels.extend(components[idx]['pixels'])
+                    v = components[idx]["value"]
+                    pixels_by_value.setdefault(v, []).extend(components[idx]["pixels"])
+                    all_pixels.extend(components[idx]["pixels"])
+
                 composites.append({
-                    'values': sorted(values),
-                    'pixels_by_value': pixels_by_value,
-                    'all_pixels': all_pixels,
+                    "values": sorted(values),
+                    "pixels_by_value": pixels_by_value,
+                    "all_pixels": all_pixels,
                 })
 
     return composites
@@ -578,21 +513,17 @@ def secondary_mapping_positioning(
 def secondary_mapping(
     composites: List[Dict],
     F_q: np.ndarray,
-    n: int
+    n: int,
 ) -> np.ndarray:
-    """
-    Apply secondary mapping Eqs. (6)-(7):
-      H2^1 = 2^n * R2^1
-      H2^n = H2^1 + 2^n - 1
-      H2^j = H2^1 + floor(2^n/(n-1)) * (j-1), j=2..n-1
-    """
+    """Restore gradient levels within each composite component."""
     restored = F_q.copy()
     step = 1 << n
 
     for comp in composites:
-        values = comp['values']
+        values = comp["values"]
         if len(values) < 2:
             continue
+
         R2_1 = values[0]
         H2_1 = step * R2_1
         H2_n = H2_1 + step - 1
@@ -606,26 +537,21 @@ def secondary_mapping(
                 H2[j] = H2_1 + base * j
 
         for jdx, v in enumerate(values):
-            for (i, j) in comp['pixels_by_value'].get(v, []):
+            for (i, j) in comp["pixels_by_value"].get(v, []):
                 restored[i, j] = H2[jdx]
 
     return restored
 
 
-# =============================================================================
-# Full Pipeline
-# =============================================================================
+# -----------------------------------------------------------------------------
+# Full pipeline
+# -----------------------------------------------------------------------------
 
 class FalseContourSuppression:
-    """
-    Complete pipeline:
-      1. Detection: pre-quantize -> variable thresholding -> SLIC -> ARM -> RQC
-      2. Pre-compression: grayscale level grouping + mapping
-      3. Decompression: CFC -> secondary mapping positioning -> secondary mapping
-    """
+    """CPU-only compression-restoration pipeline."""
 
     def __init__(self, n: int, x: int = 8):
-        assert 2 <= n <= x - 3, f"Operating range: 2 <= n <= {x-3}"
+        assert 2 <= n <= x - 3, f"Operating range: 2 <= n <= {x - 3}"
         self.n = n
         self.x = x
 
@@ -633,7 +559,7 @@ class FalseContourSuppression:
         n, x = self.n, self.x
         f = f.astype(np.int32)
 
-        A, F_q, g = detect_false_contour_regions(f, n, x)
+        A, F_q, _ = detect_false_contour_regions(f, n, x)
 
         clusters_info, r_min, h_max, h_min = grayscale_level_grouping(
             A, f, F_q, n
@@ -644,26 +570,23 @@ class FalseContourSuppression:
         compressed = mapped // step
 
         return {
-            'compressed': compressed.astype(np.uint16),
-            'F_q': F_q,
-            'A': A,
-            'clusters_info': clusters_info,
-            'r_min': r_min,
-            'h_max': h_max,
-            'h_min': h_min,
-            'shape': f.shape,
+            "compressed": compressed.astype(np.uint16),
+            "r_min": r_min,
+            "h_max": h_max,
+            "h_min": h_min,
+            "shape": f.shape,
         }
 
     def decompress(self, payload: Dict) -> np.ndarray:
         n = self.n
-        r_min = payload['r_min']
-        h_min = payload['h_min']
-        h_max = payload['h_max']
+        r_min = payload["r_min"]
+        h_min = payload["h_min"]
+        h_max = payload["h_max"]
 
         step = 1 << n
-        F_q_recon = payload['compressed'].astype(np.int32) * step
+        F_q_recon = payload["compressed"].astype(np.int32) * step
 
-        comp_map, components = connected_components_8(F_q_recon)
+        _, components = connected_components_8(F_q_recon)
         qualified = component_filtering_criteria(components, r_min, h_min, h_max)
         composites = secondary_mapping_positioning(qualified, n)
         restored = secondary_mapping(composites, F_q_recon, n)
@@ -673,59 +596,12 @@ class FalseContourSuppression:
         return restored.astype(np.uint8 if self.x == 8 else np.uint16)
 
 
-# =============================================================================
-# Demo / Test
-# =============================================================================
-
 if __name__ == "__main__":
-    np.random.seed(42)
+    # Minimal usage example.
+    f = np.zeros((256, 256), dtype=np.uint8)
+    f[64:192, 64:192] = np.linspace(144, 159, 128, dtype=np.uint8)[:, None]
 
-    H, W = 256, 256
-    x = 8
-    n = 4
-
-    f = np.zeros((H, W), dtype=np.int32)
-    for i in range(H):
-        for j in range(W):
-            if 64 <= i < 192 and 64 <= j < 192:
-                t = (i - 64) / 128.0
-                f[i, j] = int(144 + t * 15)
-            else:
-                f[i, j] = np.random.randint(0, 256)
-    f = f.astype(np.uint8)
-
-    F_direct = quantize_image(f.astype(np.int32), n).astype(np.uint8)
-
-    pipeline = FalseContourSuppression(n=n, x=x)
+    pipeline = FalseContourSuppression(n=4, x=8)
     payload = pipeline.compress(f)
     restored = pipeline.decompress(payload)
-
-    print("=" * 60)
-    print("False Contour Suppression Pipeline - Demo")
-    print("=" * 60)
-    print(f"Image shape: {f.shape}")
-    print(f"Bit depth x = {x}, quantization level n = {n}")
-    print(f"Original range: [{f.min()}, {f.max()}]")
-    print(f"Direct quantized range: [{F_direct.min()}, {F_direct.max()}]")
-    print(f"Restored range: [{restored.min()}, {restored.max()}]")
-    print(f"Detected false contour regions: {len(payload['A'])}")
-    print(f"r_min = {payload['r_min']}")
-    print(f"h_min = {payload['h_min']}, h_max = {payload['h_max']}")
-
-    region = (slice(64, 192), slice(64, 192))
-    orig_region = f[region].astype(np.float64)
-    direct_region = F_direct[region].astype(np.float64)
-    restored_region = restored[region].astype(np.float64)
-
-    mse_direct = np.mean((orig_region - direct_region) ** 2)
-    mse_restored = np.mean((orig_region - restored_region) ** 2)
-
-    print(f"\nIn smooth region:")
-    print(f"  MSE (direct quantization): {mse_direct:.2f}")
-    print(f"  MSE (proposed method):     {mse_restored:.2f}")
-    print(f"  Improvement: {mse_direct / max(mse_restored, 1e-6):.2f}x")
-
-    print(f"\nDistinct levels in smooth region:")
-    print(f"  Original: {len(np.unique(orig_region))}")
-    print(f"  Direct:   {len(np.unique(direct_region))}")
-    print(f"  Restored: {len(np.unique(restored_region))}")
+    print(restored.shape, restored.dtype, restored.min(), restored.max())
