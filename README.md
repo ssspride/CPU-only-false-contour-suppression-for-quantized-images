@@ -19,14 +19,14 @@ artifacts follow a simple mechanism: it merely truncates pixel bit-depth. Around
 this scheme, we design a dedicated, training-free false contour suppression
 algorithm that forms a CPU-only compression–restoration pipeline:
 
-- Coarse-to-fine detection** — localizes artifact-prone smooth regions by
+- Coarse-to-fine detection — localizes artifact-prone smooth regions by
   exploiting the deterministic step structure of quantization bands.
-- Linear encoding–decoding** — preserves and reconstructs lost gradient
+- Linear encoding–decoding — preserves and reconstructs lost gradient
   information to maintain perceptual fidelity.
 
 The pipeline involves no transforms, no entropy coding, and no neural networks.
 
----
+---------------------------
 
 
 
@@ -58,23 +58,7 @@ For color images, the pipeline is applied independently to each RGB channel.
 
 ---
 
- Results
 
-Evaluated on DIV2K and Kodak24.
-
-| Method | Quality | Speed | Hardware |
-|--------|---------|-------|----------|
-| Classical decontouring baselines | Lower | — | CPU |
-| Multi-stage JPEG/JPEG2000 restoration | Lower | Slower | CPU |
-| Deep learning (ARCNN, RIDNet, SwinIR) | Comparable | 52.6–78.1% slower | GPU |
-| Proposed | High | Fastest | CPU |
-
-The proposed method substantially outperforms classical decontouring baselines
-in objective and perceptual quality, and surpasses multi-stage JPEG/JPEG2000
-restoration pipelines in both quality and speed, achieving a 3.5–4.0× speedup
-entirely on CPU. Against GPU-accelerated deep learning, it attains comparable
-perceptual quality (NIQE difference within −0.11 to +0.09) while reducing
-inference latency by 52.6%–78.1%.
 
  Experimental Setup
 
@@ -88,8 +72,8 @@ Any speed advantage of the proposed CPU-only method over GPU-accelerated
 baselines can thus be attributed to algorithmic efficiency, not hardware.
 
 ---
+This supplementary material provides a qualitative visual analysis on the Kodak24 dataset, Fig. 1 analyzes the compression artifact performance of direct quantization, JPEG, JPEG2000, and Figs. 2–5 present visual comparisons under four experimental configurations.
 
- Installation
 
 Requirements: Python 3.8+, NumPy, Pillow.
 
