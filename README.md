@@ -28,8 +28,8 @@ The pipeline consists of three stages.
 
 ### Stage 1: False Contour Region Detection
 
-- Pre-quantization to target bit-depth: `x -> x - n` bpp
-- Variable thresholding with adaptive window: `s = 2 * floor(sqrt(W * H) / 150) + 3`
+- Pre-quantization to target bit-depth: $x \to x - n$ bpp
+- Variable thresholding with adaptive window: $s = 2 \lfloor \sqrt{WH}/150 \rfloor + 3$
 - Single-iteration SLIC superpixel segmentation
 - Adjacency-driven region merging (ARM)
 - Region qualification criteria (RQC): neighborhood, equidistant step,
@@ -37,8 +37,8 @@ The pipeline consists of three stages.
 
 ### Stage 2: Pre-compression Processing
 
-- Grayscale level grouping into `n` subgroups
-- Grayscale level mapping: `H^j_i = q_i + (j - 1) * 2^n`
+- Grayscale level grouping into $n$ subgroups
+- Grayscale level mapping: $H^j_i = q_i + (j - 1) \cdot 2^n$
 - Preserves pixel value lower bound, monotonicity, and gradient direction
 - Truncation to compact bitstreams
 
@@ -48,9 +48,9 @@ The pipeline consists of three stages.
 - Component filtering criteria (CFC)
 - Secondary mapping positioning (path-by-path feature determination)
 - Secondary mapping:
-  - `H2^1_i = 2^n * R2^1_i`
-  - `H2^n_i = H2^1_i + 2^n - 1`
-  - `H2^j_i = H2^1_i + floor(2^n / (n - 1)) * (j - 1)`, for `j = 2, ..., n - 1`
+  - $H2^1_i = 2^n \cdot R2^1_i$
+  - $H2^n_i = H2^1_i + 2^n - 1$
+  - $H2^j_i = H2^1_i + \lfloor 2^n/(n-1) \rfloor \cdot (j-1)$, for $j = 2,\ldots,n-1$
 
 For color images, the pipeline is applied independently to each RGB channel.
 
@@ -58,7 +58,7 @@ For color images, the pipeline is applied independently to each RGB channel.
 
 | Item | Details |
 |------|---------|
-| Proposed method & baselines | Raspberry Pi 5 (ARM Cortex-A76, 4 cores, 8 GB RAM), no GPU/NPU |
+| Proposed method and classical baselines | Raspberry Pi 5 (ARM Cortex-A76, 4 cores, 8 GB RAM), no GPU/NPU |
 | Deep learning baselines | NVIDIA Jetson Orin Nano (8 GB RAM), GPU-accelerated |
 | Timing | Average of 100 runs after 10 warm-up iterations |
 
@@ -70,16 +70,11 @@ baselines can thus be attributed to algorithmic efficiency, not hardware.
 This supplementary material provides a qualitative visual analysis on the
 Kodak24 dataset.
 
-- `Fig1.pdf`: compression artifact comparison of direct quantization, JPEG,
-  and JPEG2000.
-- `Fig2.pdf`: visual comparison for Setting 1 (direct quantization with
-  traditional decontouring).
-- `Fig3.pdf`: visual comparison for Setting 2 (non-direct quantization with
-  multi-stage traditional restoration).
-- `Fig4.pdf`: visual comparison for Setting 3 (direct quantization with deep
-  learning restoration).
-- `Fig5.pdf`: visual comparison for Setting 4 (non-direct quantization with
-  deep learning restoration).
+- [`Fig1.pdf`](Fig1.pdf): compression artifact comparison of direct quantization, JPEG, and JPEG2000.
+- [`Fig2.pdf`](Fig2.pdf): visual comparison for Setting 1 (direct quantization with traditional decontouring).
+- [`Fig3.pdf`](Fig3.pdf): visual comparison for Setting 2 (non-direct quantization with multi-stage traditional restoration).
+- [`Fig4.pdf`](Fig4.pdf): visual comparison for Setting 3 (direct quantization with deep learning restoration).
+- [`Fig5.pdf`](Fig5.pdf): visual comparison for Setting 4 (non-direct quantization with deep learning restoration).
 
 ## Requirements
 
